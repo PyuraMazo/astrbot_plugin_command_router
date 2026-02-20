@@ -1,0 +1,26 @@
+{
+  "text_provider_id": {
+    "description": "文本解释优先使用的 Provider ID",
+    "hint": "留空则使用当前会话 Provider",
+    "_special": "select_provider",
+    "type": "string"
+  },
+  "enable_global_match": {
+    "description": "启用全局匹配模式",
+    "hint": "启用后，将对用户的每一条有效消息进行解析。如果启用，请合理配合唤醒方式，以免出现意外情况",
+    "type": "bool",
+    "default": true
+  },
+  "activate_by_wake": {
+    "description": "唤醒机器人激活全局模式",
+    "hint": "文本需要有唤醒符或者@机器人才能触发全局模式，关闭则会响应每一天消息，可能导致意外情况",
+    "type": "bool",
+    "default": true
+  },
+  "matched_tips": {
+    "description": "向用户发送成功匹配",
+    "hint": "当匹配成功时，向用户发送正确的调用参数的形式",
+    "type": "bool",
+    "default": false
+  }
+}
