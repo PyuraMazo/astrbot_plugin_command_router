@@ -1,6 +1,6 @@
 name: astrbot_plugin_command_router
 display_name: 智能指令路由器
-desc: 通过AI解析并触发特定指令。
+desc: 基于AI的自然语言指令解析，允许用户使用自然语言调用 AstrBot 中已注册的指令。
 version: v1.0.0
 author: PyuraMazo
 repo: https://github.com/PyuraMazo/astrbot_plugin_command_router
