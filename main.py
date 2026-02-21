@@ -130,7 +130,7 @@ class LLM:
         self.context = context
         self.config = config
         self.brief_map = brief_map
-        self.response_pattern = re.compile(r'\{.*}')
+        self.response_pattern = re.compile(r'\{.*}', re.S)
 
         self.cmd_str: str | None = None
 
