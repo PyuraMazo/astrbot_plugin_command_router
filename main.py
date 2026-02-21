@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Coroutine, Any
 from collections.abc import AsyncIterator
 from pydantic import BaseModel
@@ -6,12 +7,15 @@ from pydantic import BaseModel
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
 from astrbot.api import AstrBotConfig, logger
-from astrbot.core.star import command_management
+from astrbot.core.message.components import Reply, Plain
+from astrbot.core.star import command_management, StarMetadata
 from astrbot.core.star.filter.command import CommandFilter
 
 
 # 自定义异常
-class NoProviderException(Exception):
+class PluginBaseException(Exception):
+    pass
+class NoProviderException(PluginBaseException):
     pass
 
 
@@ -38,8 +42,6 @@ class CommandInfo(BaseModel):
 
 class CommandBrief(BaseModel):
     full_description: str
-    plugin_name: str
-    function_name: str
     command_name: str
     aliases: list[str]
     args: dict[str, Any]
@@ -47,8 +49,6 @@ class CommandBrief(BaseModel):
 
 class LLMResponse(BaseModel):
     matched: bool
-    plugin_name: str | None = None
-    function_name: str | None = None
     id: int | None = None
     parameters: list[str] | None = None
     confidence: float | None = None
@@ -59,25 +59,34 @@ class LLMResponse(BaseModel):
 class CommandParser:
     def __init__(self, context: Context):
         self.context = context
-        self.init = False
         self.id_dict: dict[int, str] = {}
         self.commands: dict[int, CommandInfo] = {}
         self.brief_map: dict[int, CommandBrief] = {}
+        self.plugin_meta: dict[str, StarMetadata] = {}
 
         self.max_id = 0
 
 
-
     async def initialize(self):
+        await self.clear()
         cmd_list = await command_management.list_commands()
         descriptors = command_management._collect_descriptors(include_sub_commands=True)
         params = {desc.filter_ref.command_name: desc.filter_ref.handler_params for desc in descriptors if
                   isinstance(desc.filter_ref, CommandFilter)}
         for cmd in cmd_list:
             info = CommandInfo(**cmd)
-            self._build_brief(info, params)
+            self._build_dicts(info, params)
 
-    def _build_brief(self, info: CommandInfo, params: dict[str, Any]):
+    async def clear(self):
+        self.max_id = 0
+        self.id_dict.clear()
+        self.commands.clear()
+        self.brief_map.clear()
+        self.plugin_meta.clear()
+
+    def _build_dicts(self, info: CommandInfo, params: dict[str, Any], ):
+        meta = self.context.get_registered_star(info.plugin)
+        self.plugin_meta[info.plugin] = meta
         if not info.enabled:
             return
 
@@ -91,11 +100,9 @@ class CommandParser:
                 self.id_dict[self.max_id] = f'{sub_command.plugin}:{sub_command.original_command}'
                 self.commands[self.max_id] = sub_command
                 self.brief_map[self.max_id] = CommandBrief(
-                    full_description=f'插件描述：{self.context.get_registered_star(info.plugin).desc}\n'
+                    full_description=f'插件描述：{meta.desc}\n'
                                      f'指令组描述：{main_desc}\n'
                                      f'本指令描述：{sub_command.description}',
-                    plugin_name=sub_command.plugin,
-                    function_name=sub_command.handler_name,
                     command_name=sub_command.current_fragment,
                     aliases=sub_command.aliases,
                     args=arg,
@@ -109,10 +116,8 @@ class CommandParser:
             self.id_dict[self.max_id] = f'{info.plugin}:{info.original_command}'
             self.commands[self.max_id] = info
             self.brief_map[self.max_id] = CommandBrief(
-                full_description=f'插件描述：{self.context.get_registered_star(info.plugin).desc}\n'
+                full_description=f'插件描述：{meta.desc}\n'
                                  f'指令描述：{info.description}',
-                plugin_name=info.plugin,
-                function_name=info.handler_name,
                 command_name = info.current_fragment,
                 aliases = info.aliases,
                 args=arg,
@@ -125,8 +130,13 @@ class LLM:
         self.context = context
         self.config = config
         self.brief_map = brief_map
-        self.cmd_str = self.build_cmd_str()
+        self.response_pattern = re.compile(r'\{.*}')
 
+        self.cmd_str: str | None = None
+
+
+    async def after_initialize(self):
+        self.cmd_str = self.build_cmd_str()
 
     def build_cmd_str(self):
         str_list = [json.dumps(self.brief_map[cmd].model_dump()) for cmd in self.brief_map]
@@ -150,8 +160,6 @@ class LLM:
         1. 如果匹配某个指令，请返回：
            {{
              "matched": true,
-             "plugin_name": "xxx" // 匹配指令所属的插件, string
-             "function_name": "xx", // 匹配指令的函数名称, string
              "id": xxx, // 匹配指令的唯一id, int
              "parameters": [arg1, arg2, ...], // 匹配指令的参数, array<string>
              "confidence": number  // 匹配置信度, float, 取值0 ~ 1
@@ -180,7 +188,9 @@ class LLM:
             chat_provider_id=await self.get_provider(event.unified_msg_origin),
             prompt=self.build_prompt(event.message_str),
         )
-        return LLMResponse.model_validate(json.loads(llm_resp.completion_text))
+        text_resp = llm_resp.completion_text
+        formated = self.response_pattern.findall(text_resp)[0]
+        return LLMResponse.model_validate(json.loads(formated))
 
 
 class CommandRouterPlugin(Star):
@@ -190,11 +200,12 @@ class CommandRouterPlugin(Star):
         self.wake_prefix = []
 
         self.parser = CommandParser(self.context)
+        self.llm = LLM(self.context, self.config, self.parser.brief_map)
 
 
     async def initialize(self):
         """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
-        pass
+        await self.after_initialized()
 
 
     async def terminate(self):
@@ -207,7 +218,11 @@ class CommandRouterPlugin(Star):
         self.wake_prefix = cfg.get("wake_prefix")
 
     def match_filter(self, event: AstrMessageEvent):
-        if event._has_send_oper or not self.config.get('enable_global_match', True) or not event.message_str:
+        if (
+            event._has_send_oper # 已经有指令向用户发送过消息，触发指令的识别标志
+            or not self.config.get('enable_global_match', True) # 未开启全局模式
+            or not event.message_str # 发送空文本
+        ):
             return False
 
         # 唤醒触发
@@ -226,31 +241,50 @@ class CommandRouterPlugin(Star):
     def describe_resp(self, resp: LLMResponse):
         return f'{self.parser.id_dict[resp.id].split(":", 1)[1]}，参数：{" ".join(resp.parameters) or "无"}'
 
-    async def core_handler(self, event: AstrMessageEvent):
-        brief_body = await LLM(self.context, self.config, self.parser.brief_map).submit(event)
+    def reply(self, event: AstrMessageEvent, message: str):
+        return event.chain_result([Reply(id=event.message_obj.message_id), Plain(message)])
+
+    async def core_handler(self, event: AstrMessageEvent, **kwargs):
+        brief_body = await self.llm.submit(event)
         if brief_body.matched:
             whole_body = self.parser.commands[brief_body.id]
+            meta = self.parser.plugin_meta[whole_body.plugin]
 
-            if not self.permission_filter(event, whole_body.permission):
-                yield event.plain_result(f'成功匹配指令：{self.describe_resp(brief_body)}，但你无权调用。')
-                return
+            plugin_class = meta.star_cls
+            function_name = whole_body.handler_name
+            args = brief_body.parameters
+            is_sync = False if kwargs.get('try_again', True) and not meta.activated else True
+            if hasattr(plugin_class, function_name) and is_sync:
+                if not meta.activated:
+                    return
+                if not self.permission_filter(event, whole_body.permission):
+                    yield self.reply(event, f'成功匹配指令：{self.describe_resp(brief_body)}，但你无权调用。')
+                    return
+                if self.config.get('matched_tips', False):
+                    yield self.reply(event, f'成功匹配指令：{self.describe_resp(brief_body)}。')
 
-            target_plugin = self.context.get_registered_star(brief_body.plugin_name)
-            if target_plugin:
-                plugin_class = target_plugin.star_cls
-                function_name = brief_body.function_name
-                args = brief_body.parameters
-                if hasattr(plugin_class, function_name):
-                    if self.config.get('matched_tips', False):
-                        yield event.plain_result(f'成功匹配指令：{self.describe_resp(brief_body)}。')
+                actual_command = getattr(plugin_class, function_name)
+                result = actual_command(event, *args)
+                if isinstance(result, Coroutine):
+                    yield await result
+                elif isinstance(result, AsyncIterator):
+                    async for res in result:
+                        yield res
+            else:
+                if kwargs.get('try_again', True):
+                    logger.info('指令状态异常，正在尝试同步...')
+                    await self.after_initialized()
+                    async for res in self.core_handler(event, try_again=False):
+                        yield res
+                else:
+                    raise Exception('自动同步无效！')
 
-                    actual_command = getattr(plugin_class, function_name)
-                    result = actual_command(event, *args)
-                    if isinstance(result, Coroutine):
-                        yield await result
-                    elif isinstance(result, AsyncIterator):
-                        async for res in result:
-                            yield res
+    @filter.on_astrbot_loaded()
+    async def after_initialized(self):
+        """延迟初始化"""
+        await self.parser.initialize()
+
+        await self.llm.after_initialize()
 
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=-100)
@@ -259,28 +293,24 @@ class CommandRouterPlugin(Star):
         if not self.match_filter(event):
             return
 
-        if not self.parser.init:
-            # 延迟初始化
-            await self.parser.initialize()
-            self.parser.init = True
-
         try:
             async for res in self.core_handler(event):
                 yield res
-        except Exception as e:
-            logger.error(e, exc_info=True)
+        except PluginBaseException as e1:
+            yield self.reply(event, str(e1))
+            logger.error(e1, exc_info=True)
+        except Exception as e2:
+            logger.error(e2, exc_info=True)
 
 
     @filter.command("解析", alias={"parse"})
     async def command_parser(self, event: AstrMessageEvent):
         """指令响应模式"""
-        if not self.parser.init:
-            # 延迟初始化
-            await self.parser.initialize()
-            self.parser.init = True
-
         try:
             async for res in self.core_handler(event):
                 yield res
-        except Exception as e:
-            logger.error(e, exc_info=True)
+        except PluginBaseException as e1:
+            yield self.reply(event, str(e1))
+            logger.error(e1, exc_info=True)
+        except Exception as e2:
+            logger.error(e2, exc_info=True)
