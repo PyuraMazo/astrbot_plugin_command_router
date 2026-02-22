@@ -279,11 +279,19 @@ class CommandRouterPlugin(Star):
                 else:
                     raise Exception('自动同步无效！')
 
+    async def handle_meta_change(self):
+        old = set(self.parser.plugin_meta)
+        await self.after_initialized()
+        new = set(self.parser.plugin_meta)
+        if old == new:
+            return '同步成功！\n未发现增删插件。'
+        else:
+            return f'同步成功！\n新增插件：{"、".join(new - old) or "无"}\n删除插件：{"、".join(old - new) or "无"}'
+
     @filter.on_astrbot_loaded()
     async def after_initialized(self):
         """延迟初始化"""
         await self.parser.initialize()
-
         await self.llm.after_initialize()
 
 
@@ -314,3 +322,8 @@ class CommandRouterPlugin(Star):
             logger.error(e1, exc_info=True)
         except Exception as e2:
             logger.error(e2, exc_info=True)
+
+    @filter.command("同步", alias={"更新"})
+    async def data_sync(self, event: AstrMessageEvent):
+        """同步因新增插件导致的缓存列表不一致的情况，也可用作意外导致的不同步情况"""
+        yield event.plain_result(await self.handle_meta_change())

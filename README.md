@@ -2,6 +2,8 @@
 
 一个基于人工智能的自然语言指令解析插件，允许用户使用自然语言调用 AstrBot 中已注册的任何指令。
 
+> 如果本插件启用期间增加了新的插件，需要重载本插件以应用。其它情况都无需手动重载本插件，插件列表不匹配会自动尝试更新。
+
 ## ✨ 核心特性
 
 - **🤖 智能意图识别**：利用大型语言模型（LLM）理解用户自然语言，准确匹配对应指令
@@ -22,7 +24,7 @@
 
 2. **安装到 AstrBot**
    - 将整个插件目录复制到 `AstrBot/data/plugins/astrbot_plugin_command_router/`
-   - 或通过 AstrBot 管理面板的插件市场安装（如果支持）
+   - 或通过 AstrBot 管理面板的插件市场安装
 
 3. **配置 LLM 供应商**
    - 在插件配置页面设置 `text_provider_id`
@@ -39,31 +41,6 @@
 | `enable_global_match` | 布尔值 | `true` | **启用全局匹配模式**<br>开启后将对符合条件的消息进行自动解析 |
 | `activate_by_wake` | 布尔值 | `true` | **唤醒触发限制**<br>仅当消息包含唤醒前缀或@机器人时才触发全局模式 |
 | `matched_tips` | 布尔值 | `false` | **匹配成功提示**<br>匹配成功后向用户显示识别的指令和参数 |
-
-### 配置建议
-
-#### 安全配置（默认）
-```json
-{
-  "text_provider_id": "PROVIDER_ID",
-  "enable_global_match": true,
-  "activate_by_wake": true,
-  "matched_tips": false
-}
-```
-- 保持 `activate_by_wake: true` 避免意外触发
-- 关闭 `matched_tips` 减少干扰消息
-
-#### 宽松配置
-```json
-{
-  "text_provider_id": "PROVIDER_ID",
-  "enable_global_match": true,
-  "activate_by_wake": false,
-  "matched_tips": true
-}
-```
-- 用于测试和调试，可看到详细匹配信息
 
 ## 🚀 使用指南
 
