@@ -374,11 +374,20 @@ class CommandRouterPlugin(Star):
             return
 
         try:
+            sent = False
             async for res in self.core_handler(event):
+                sent = True
                 yield res
-            event._has_send_oper = not self.config.get("always_llm", False)
+
+            # Only mark the event as handled (to block further handlers) if this plugin
+            # actually sent a response. If `always_llm` is enabled we keep allowing
+            # other handlers to run (don't mark as handled).
+            event._has_send_oper = sent and not self.config.get("always_llm", False)
         except PluginBaseException as e1:
+            # We do send a reply in this error case, so mark the event handled
+            # (unless always_llm is set).
             yield self.reply(event, str(e1))
+            event._has_send_oper = True and not self.config.get("always_llm", False)
             logger.error(e1, exc_info=True)
         except Exception as e2:
             logger.error(e2, exc_info=True)
@@ -387,11 +396,18 @@ class CommandRouterPlugin(Star):
     async def command_parser(self, event: AstrMessageEvent):
         """指令响应模式"""
         try:
+            sent = False
             async for res in self.core_handler(event):
+                sent = True
                 yield res
-            event._has_send_oper = not self.config.get("always_llm", False)
+
+            # Same behavior as global_parser — only mark handled when something was sent.
+            event._has_send_oper = sent and not self.config.get("always_llm", False)
         except PluginBaseException as e1:
+            # We do send a reply in this error case, so mark the event handled
+            # (unless always_llm is set).
             yield self.reply(event, str(e1))
+            event._has_send_oper = True and not self.config.get("always_llm", False)
             logger.error(e1, exc_info=True)
         except Exception as e2:
             logger.error(e2, exc_info=True)
