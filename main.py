@@ -15,14 +15,20 @@ from astrbot.core.star.filter.command import CommandFilter
 
 PLUGIN_ALTER_EVENT = False
 try:
-    from astrbot.core.star.register import register_on_plugin_loaded, register_on_plugin_unloaded
+    from astrbot.core.star.register import (
+        register_on_plugin_loaded,
+        register_on_plugin_unloaded,
+    )
+
     PLUGIN_ALTER_EVENT = True
 except ImportError:
     PLUGIN_ALTER_EVENT = False
 
+
 # 自定义异常
 class PluginBaseException(Exception):
     pass
+
 
 class NoProviderException(PluginBaseException):
     pass
@@ -70,14 +76,13 @@ class CommandParser:
     def __init__(self, context: Context):
         self.context = context
 
-        self.max_id = 1 # 当前id记录
-        self.id_dict: dict[int, str] = {} # 指令的id对应关系
-        self.commands: dict[int, CommandInfo] = {} # 指令的数据集
-        self.brief_map: dict[int, CommandBrief] = {} # 指令的简介信息
-        self.plugin_meta: dict[str, StarMetadata] = {} # 插件元素据
-        self.plugin_desc: dict[str, str] = {} # 插件的描述
-        self.plugin_contain: dict[str, list[int]] = {} # 一个插件包含的所有指令
-
+        self.max_id = 1  # 当前id记录
+        self.id_dict: dict[int, str] = {}  # 指令的id对应关系
+        self.commands: dict[int, CommandInfo] = {}  # 指令的数据集
+        self.brief_map: dict[int, CommandBrief] = {}  # 指令的简介信息
+        self.plugin_meta: dict[str, StarMetadata] = {}  # 插件元素据
+        self.plugin_desc: dict[str, str] = {}  # 插件的描述
+        self.plugin_contain: dict[str, list[int]] = {}  # 一个插件包含的所有指令
 
     async def initialize(self):
         self.clear()
@@ -107,11 +112,11 @@ class CommandParser:
         params: dict[str, Any],
     ):
         meta = self.context.get_registered_star(info.plugin)
+        if not info.enabled or not meta.activated:
+            return
+
         self.plugin_meta[info.plugin] = meta
         self.plugin_desc[info.plugin] = meta.desc
-
-        if not info.enabled:
-            return
 
         start = self.max_id
         if info.is_group:
@@ -260,14 +265,12 @@ class CommandRouterPlugin(Star):
         self.parser = CommandParser(context)
         self.llm: LLM | None = None
 
-
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
         pass
 
     async def lazy_init(self):
         """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
-        logger.error('111')
         await self.parser.initialize()
         self.llm = LLM(
             self.context, self.config, self.parser.brief_map, self.parser.plugin_desc
@@ -379,8 +382,6 @@ class CommandRouterPlugin(Star):
             await self.lazy_init()
             return f"同步成功！变动插件：{alter.name}"
 
-
-
     @filter.on_astrbot_loaded()
     async def lazy_initialize(self):
         """延迟初始化"""
@@ -432,6 +433,7 @@ class CommandRouterPlugin(Star):
             logger.error(e2, exc_info=True)
 
     if PLUGIN_ALTER_EVENT:
+
         @filter.on_plugin_loaded()
         async def plugin_loaded(self, metadata: StarMetadata):
             logger.info(await self.handle_meta_change(metadata))
@@ -440,6 +442,7 @@ class CommandRouterPlugin(Star):
         async def plugin_unloaded(self, metadata: StarMetadata):
             logger.info(await self.handle_meta_change(metadata))
     else:
+
         @filter.command("同步", alias={"更新"})
         async def data_sync(self, event: AstrMessageEvent):
             """同步因新增插件导致的缓存列表不一致的情况，也可用作意外导致的不同步情况"""
