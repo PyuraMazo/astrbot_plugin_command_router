@@ -13,11 +13,16 @@ from astrbot.core.message.components import Plain, Reply
 from astrbot.core.star import StarMetadata, command_management
 from astrbot.core.star.filter.command import CommandFilter
 
+PLUGIN_ALTER_EVENT = False
+try:
+    from astrbot.core.star.register import register_on_plugin_loaded, register_on_plugin_unloaded
+    PLUGIN_ALTER_EVENT = True
+except ImportError:
+    PLUGIN_ALTER_EVENT = False
 
 # 自定义异常
 class PluginBaseException(Exception):
     pass
-
 
 class NoProviderException(PluginBaseException):
     pass
@@ -64,17 +69,18 @@ class LLMResponse(BaseModel):
 class CommandParser:
     def __init__(self, context: Context):
         self.context = context
-        self.id_dict: dict[int, str] = {}
-        self.commands: dict[int, CommandInfo] = {}
-        self.brief_map: dict[int, CommandBrief] = {}
-        self.plugin_meta: dict[str, StarMetadata] = {}
-        self.plugin_desc: dict[str, str] = {}
-        self.plugin_contain: dict[str, list[int]] = {}
 
-        self.max_id = 1
+        self.max_id = 1 # 当前id记录
+        self.id_dict: dict[int, str] = {} # 指令的id对应关系
+        self.commands: dict[int, CommandInfo] = {} # 指令的数据集
+        self.brief_map: dict[int, CommandBrief] = {} # 指令的简介信息
+        self.plugin_meta: dict[str, StarMetadata] = {} # 插件元素据
+        self.plugin_desc: dict[str, str] = {} # 插件的描述
+        self.plugin_contain: dict[str, list[int]] = {} # 一个插件包含的所有指令
+
 
     async def initialize(self):
-        await self.clear()
+        self.clear()
         cmd_list = await command_management.list_commands()
         descriptors = command_management._collect_descriptors(include_sub_commands=True)
         params = {
@@ -86,13 +92,14 @@ class CommandParser:
             info = CommandInfo(**cmd)
             self._build_dicts(info, params)
 
-    async def clear(self):
+    def clear(self):
         self.max_id = 1
         self.id_dict = {}
         self.commands = {}
         self.brief_map = {}
         self.plugin_meta = {}
         self.plugin_desc = {}
+        self.plugin_contain = {}
 
     def _build_dicts(
         self,
@@ -253,16 +260,18 @@ class CommandRouterPlugin(Star):
         self.parser = CommandParser(context)
         self.llm: LLM | None = None
 
-    async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
-        await self.parser.initialize()
-        self.llm = LLM(
-            self.context, self.config, self.parser.brief_map, self.parser.plugin_desc
-        )
 
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
         pass
+
+    async def lazy_init(self):
+        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
+        logger.error('111')
+        await self.parser.initialize()
+        self.llm = LLM(
+            self.context, self.config, self.parser.brief_map, self.parser.plugin_desc
+        )
 
     def get_wake_prefix(self):
         cfg = self.context.get_config()
@@ -350,26 +359,32 @@ class CommandRouterPlugin(Star):
 
             else:
                 if kwargs.get("try_again", True):
-                    logger.info("指令状态异常，正在尝试同步...")
-                    await self.initialize()
+                    logger.warn("指令状态异常，正在尝试同步...")
+                    await self.lazy_init()
                     async for res in self.core_handler(event, try_again=False):
                         yield res
                 else:
-                    raise Exception("自动同步无效！")
+                    raise PluginBaseException("自动同步无效！")
 
-    async def handle_meta_change(self):
-        old = set(self.parser.plugin_meta)
-        await self.initialize()
-        new = set(self.parser.plugin_meta)
-        if old == new:
-            return "同步成功！\n未发现增删插件。"
+    async def handle_meta_change(self, alter: StarMetadata = None):
+        if alter is None:
+            old = set(self.parser.plugin_meta)
+            await self.lazy_init()
+            new = set(self.parser.plugin_meta)
+            if old == new:
+                return "同步成功！未发现增删插件。"
+            else:
+                return f"同步成功！\n新增插件：{'、'.join(new - old) or '无'}\n删除插件：{'、'.join(old - new) or '无'}"
         else:
-            return f"同步成功！\n新增插件：{'、'.join(new - old) or '无'}\n删除插件：{'、'.join(old - new) or '无'}"
+            await self.lazy_init()
+            return f"同步成功！变动插件：{alter.name}"
+
+
 
     @filter.on_astrbot_loaded()
     async def lazy_initialize(self):
         """延迟初始化"""
-        await self.initialize()
+        await self.lazy_init()
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=-100)
     async def global_parser(self, event: AstrMessageEvent):
@@ -416,7 +431,16 @@ class CommandRouterPlugin(Star):
         except Exception as e2:
             logger.error(e2, exc_info=True)
 
-    @filter.command("同步", alias={"更新"})
-    async def data_sync(self, event: AstrMessageEvent):
-        """同步因新增插件导致的缓存列表不一致的情况，也可用作意外导致的不同步情况"""
-        yield event.plain_result(await self.handle_meta_change())
+    if PLUGIN_ALTER_EVENT:
+        @filter.on_plugin_loaded()
+        async def plugin_loaded(self, metadata: StarMetadata):
+            logger.info(await self.handle_meta_change(metadata))
+
+        @filter.on_plugin_unloaded()
+        async def plugin_unloaded(self, metadata: StarMetadata):
+            logger.info(await self.handle_meta_change(metadata))
+    else:
+        @filter.command("同步", alias={"更新"})
+        async def data_sync(self, event: AstrMessageEvent):
+            """同步因新增插件导致的缓存列表不一致的情况，也可用作意外导致的不同步情况"""
+            yield event.plain_result(await self.handle_meta_change())
